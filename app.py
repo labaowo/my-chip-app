@@ -23,18 +23,15 @@ def load_pure_local_database(db_path):
 
 @st.cache_data(ttl=14400)
 def load_stock_names_and_volumes():
+    # 這裡只留下您確定要手動對照的股票，其他不寫
+    # 如果您連這裡都不想預設，可以留空字典：name_dict = {}
     name_dict = {
         "2330": "台積電", "2408": "南亞科", "2317": "鴻海", "3105": "穩懋", 
         "2356": "英業達", "6775": "達發", "3293": "鈊象", "3008": "大立光",
         "2303": "聯電", "2454": "聯發科", "2382": "廣達", "2301": "光寶科",
         "2603": "長榮", "2609": "陽明", "2615": "萬海", "2618": "長榮航"
     }
-    volume_dict = {
-        "2330": 35000, "2408": 12000, "2317": 45000, "3105": 3800, 
-        "2356": 18000, "6775": 1200, "3293": 1500, "3008": 800,
-        "2303": 25000, "2454": 4500, "2382": 15000, "2301": 8000,
-        "2603": 22000, "2609": 31000, "2615": 14000, "2618": 42000
-    }
+    volume_dict = {} # ➔ 這裡直接清空，不要預設成交量！
     return name_dict, volume_dict
 
 @st.cache_data(ttl=3600)
@@ -90,8 +87,12 @@ if db_master is not None:
     filtered = merged[only_stocks].copy()
     
     names, volumes = load_stock_names_and_volumes()
-    filtered['股票名稱'] = filtered['stock_id'].map(names).fillna("上市櫃個股")
-    filtered['昨日成交量(張)'] = filtered['stock_id'].map(volumes).fillna(150).astype(int)
+    filtered = merged.copy()
+    filtered['股票名稱'] = filtered['stock_id'].map(names).fillna("未命名個股")
+    
+    # 💡 完美修正點：不要用 .fillna(150)！
+    # 如果對照不到成交量，就給它 0 或者 NaN，這樣才不會被最低成交量濾網誤判！
+    filtered['昨日成交量(張)'] = filtered['stock_id'].map(volumes).fillna(0).astype(int)
     
     filtered = filtered.rename(columns={'stock_id': '股票代號'})
     filtered = filtered[['股票代號', '股票名稱', '千張大戶持股%', '千張大戶人數', '10張以下散戶持股%', '總股東人數', '昨日成交量(張)']]
