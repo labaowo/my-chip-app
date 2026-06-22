@@ -81,7 +81,7 @@ if db_master is not None:
     )
     
     # 3. 提取 10張以下散戶 (Level 1~5)
-    retail_levels = [1, 2, 3, 4, 5]
+    retail_levels = [1, 2, 3, 4, 5]  # 💡 已補齊：明確指定散戶級距
     retail_df = raw_data[raw_data['level'].isin(retail_levels)].groupby('stock_id')['percent'].sum().reset_index().rename(
         columns={'percent': '10張以下散戶持股%'}
     )
@@ -98,20 +98,21 @@ if db_master is not None:
     only_stocks = (merged['stock_id'].str.len() == 4) & (merged['stock_id'].str.isdigit())
     filtered = merged[only_stocks].copy()
     
-    # 7. 動態對照名稱，若字典找不到，就自動顯示「台股個股」不阻擋篩選
-    names, _ = load_stock_names_and_volumes()
-    filtered['股票名稱'] = filtered['stock_id'].map(names).fillna("台股個股")
+    # 7. 動態對照名稱與成交量
+    names, volumes = load_stock_names_and_volumes()
     
-    # 💡 終極修正：放棄死資料字典！動態串接 Yahoo Finance 最新的真實成交量
-    # 為了避免 Streamlit 畫面卡死，這裡直接動態抓取目前的篩選池，並給予預設
-    filtered['昨日成交量(張)'] = 500  # 先給予基礎流動性底值，避免因為沒寫字典而被剔除
+    # 💡 完美防呆：如果您的 CSV 裡有對照表以外的股票，會自動命名為「外圍個股」，不會被漏掉！
+    filtered['股票名稱'] = filtered['stock_id'].map(names).fillna("外圍個股")
+    
+    # 💡 安全成交量機制：如果對照表沒寫這檔股票，預設給它 150 張，避免因為沒寫而被濾網卡死
+    filtered['昨日成交量(張)'] = filtered['stock_id'].map(volumes).fillna(150).astype(int)
     
     filtered = filtered.rename(columns={'stock_id': '股票代號'})
     filtered = filtered[['股票代號', '股票名稱', '千張大戶持股%', '千張大戶人數', '10張以下散戶持股%', '總股東人數', '昨日成交量(張)']]
     
     # 8. 排除特定個股與金融股
     filtered['股票代號數字'] = pd.to_numeric(filtered['股票代號'])
-    bad_codes = [2412, 2633, 3045, 4904]
+    bad_codes = [2412, 2633, 3045, 4904]  # 💡 已補齊：排除特定中華電、高鐵等個股
     
     mask_normal = ~filtered['股票代號數字'].isin(bad_codes)
     mask_no_finance = ~((filtered['股票代號數字'] >= 2800) & (filtered['股票代號數字'] <= 2897))
@@ -124,6 +125,9 @@ if db_master is not None:
         (final_pool['總股東人數'] <= max_holders) &
         (final_pool['昨日成交量(張)'] >= min_vol_filter)
     ].sort_values(by='總股東人數', ascending=True)
+
+    # 10. 建立 Tabs
+    tab1, tab2, tab3 = st.tabs(["🔍 全市場中小型大戶鎖碼榜", "📊 個股籌碼全自動歷史深度健檢", "📋 全台股代號中文查閱中心"])
     
     with tab1:
         st.subheader(f"🔥 當前符合條件且具備「流動量能」的黑馬個股 (計 {len(result_df)} 檔)")
