@@ -113,14 +113,20 @@ if db_master is not None:
         (final_pool['昨日成交量(張)'] >= min_vol_filter)
     ].sort_values(by='總股東人數', ascending=True)
 
+    # 💡 修正 1：將字典宣告移到 Tabs 之外的最上層，確保所有 Tab 都能存取，絕對不會報 NameError
+    names, volumes = load_stock_names_and_volumes()
+
     tab1, tab2, tab3 = st.tabs(["🔍 全市場中小型大戶鎖碼榜", "📊 個股籌碼全自動歷史深度健檢", "📋 全台股代號中文查閱中心"])
     
     with tab1:
         st.subheader(f"🔥 當前符合條件且具備「流動量能」的黑馬個股 (計 {len(result_df)} 檔)")
-        st.dataframe(result_df.style.format({
-            '千張大戶持股%': '{:.2f}%', '10張以下散戶持股%': '{:.2f}%',
-            '千張大戶人數': '{:,} 人', '總股東人數': '{:,} 人', '昨日成交量(張)': '{:,} 張'
-        }), use_container_width=True, height=520)
+        if not result_df.empty:
+            st.dataframe(result_df.style.format({
+                '千張大戶持股%': '{:.2f}%', '10張以下散戶持股%': '{:.2f}%',
+                '千張大戶人數': '{:,} 人', '總股東人數': '{:,} 人', '昨日成交量(張)': '{:,} 張'
+            }), use_container_width=True, height=520)
+        else:
+            st.warning("💡 當前篩選條件太嚴格了，沒有股票符合，請調低大戶持股比例或放寬散戶持股上限！")
 
     with tab2:
         st.subheader("🕵️‍♂️ 指定個股【大戶籌碼線 ＋ 真實股價與成交量】專業交叉健檢")
@@ -132,11 +138,14 @@ if db_master is not None:
             hist_stock = db_master[db_master['stock_id'] == input_stock.zfill(4)].copy()
             if not hist_stock.empty:
                 hist_stock = hist_stock.drop_duplicates(subset=['date', 'level', 'percent'])
+                
+                # 標準化日期格式
                 hist_stock['date_str'] = pd.to_datetime(hist_stock['date'].astype(str), format='%Y%m%d', errors='coerce').dt.strftime('%Y-%m-%d')
                 if hist_stock['date_str'].isnull().all():
                     hist_stock['date_str'] = pd.to_datetime(hist_stock['date'].astype(str), errors='coerce').dt.strftime('%Y-%m-%d')
                 
-                t_holders = hist_stock.groupby('date_str')['holders'].sum().reset_index().rename(columns={'holders': '總人數', 'date_str': 'date'})
+                # 💡 修正 2：計算總人數時嚴格限制在 level <= 15，避免重複加總全體總計欄位
+                t_holders = hist_stock[hist_stock['level'] <= 15].groupby('date_str')['holders'].sum().reset_index().rename(columns={'holders': '總人數', 'date_str': 'date'})
                 l_df = hist_stock[hist_stock['level'] == 15][['date_str', 'percent']].rename(columns={'percent': '大戶%', 'date_str': 'date'})
                 
                 hist_r_string = "1,2,3,4,5"
@@ -145,44 +154,55 @@ if db_master is not None:
                 
                 m_hist = pd.merge(pd.merge(l_df, r_df, on='date'), t_holders, on='date').sort_values(by='date').reset_index(drop=True)
                 
+                # 接軌 Yahoo Finance 價格數據
                 price_df = get_yahoo_price_and_vol_history(input_stock)
-                if price_df is not None:
+                if price_df is not None and not price_df.empty:
                     m_hist = pd.merge(m_hist, price_df, on='date', how='left').sort_values(by='date')
                     m_hist['收盤價'] = m_hist['收盤價'].ffill().bfill()
                     m_hist['真實成交量(張)'] = m_hist['真實成交量(張)'].fillna(0).astype(int)
                 
-                # 雙層結構自適應配置 (row=1 籌碼與股價，row=2 獨立成交量長條圖)
+                # 雙層結構自適應配置
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                                     vertical_spacing=0.12,
                                     specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
                                     row_heights=[0.7, 0.3])
                 
+                # 💡 優化 3：明確指定為 'date' 軸線类型，維持 Plotly 自適應的時間序列刻度
                 fig.add_trace(go.Scatter(x=m_hist['date'], y=m_hist['大戶%'], name='千張大戶持股 (%)', line=dict(color='#E41A1C', width=4)), row=1, col=1, secondary_y=False)
                 fig.add_trace(go.Scatter(x=m_hist['date'], y=m_hist['散戶%'], name='10張以下散戶 (%)', line=dict(color='#4DAF4A', width=2, dash='dash')), row=1, col=1, secondary_y=False)
                 
-                if '收盤價' in m_hist.columns:
+                if '收盤價' in m_hist.columns and not m_hist['收盤價'].isna().all():
                     fig.add_trace(go.Scatter(x=m_hist['date'], y=m_hist['收盤價'], name='真實收盤價 (元)', line=dict(color='#1F77B4', width=2.5)), row=1, col=1, secondary_y=True)
                     fig.update_yaxes(title_text="<b>真實股價 (元)</b>", row=1, col=1, secondary_y=True)
                 
                 if '真實成交量(張)' in m_hist.columns:
-                    # 💡 上下雙軸完全體：獨立的灰黑色每週成交量長條圖
                     fig.add_trace(go.Bar(x=m_hist['date'], y=m_hist['真實成交量(張)'], name='當週成交量 (張)', marker_color='rgba(128,128,128,0.65)'), row=2, col=1)
                     fig.update_yaxes(title_text="成交量 (張)", row=2, col=1)
                 
-                fig.update_layout(title=f"<b>股票代號 {input_stock} 【量價籌碼三位一體】深度監控交叉大圖</b>", template="plotly_white", hovermode="x unified", height=650)
+                fig.update_layout(title=f"<b>股票代號 {input_stock} 【量價籌碼三位一體】深度监控交叉大圖</b>", template="plotly_white", hovermode="x unified", height=650)
                 fig.update_yaxes(title_text="持股比例 (%)", row=1, col=1, secondary_y=False)
-                fig.update_xaxes(type='category', title_text="資料日期 (每週五)", row=2, col=1)
+                
+                # 💡 修正 4：移除 type='category'，改為自動時間軸，避免合併不同頻率數據時發生圖表錯位斷線
+                fig.update_xaxes(title_text="資料日期 (每週五)", row=2, col=1)
                 st.plotly_chart(fig, use_container_width=True)
                 
-                latest_row = m_hist.iloc[-1]
-                st.markdown("### 📋 操盤室核心籌碼純單機診斷報告：")
-                st.write(f"本週大戶持股水位：**{latest_row['大戶%']:.2f} %** | 散戶持股水位：**{latest_row['散戶%']:.2f} %** | 當前對齊收盤價：**{latest_row['收盤價']:.1f} 元**")
-                if len(m_hist) >= 2:
-                    d_large = latest_row['大戶%'] - m_hist.iloc[-2]['大戶%']
-                    st.markdown("#### 🔍 操盤手實戰解讀結論：")
-                    if d_large > 0.5: st.error("🔥【主力強攻】大戶籌碼急劇鎖死！散戶大退場，多頭波段起漲前兆！")
-                    elif d_large < -0.5: st.warning("🚨【大戶棄船】主力正在趁亂出貨給市場散戶，建議避開！")
-                    else: st.info("💤【區間防守】大戶與散戶變動不大，股價震盪洗盤中。")
+                # 報告解讀與安全性檢查
+                if not m_hist.empty:
+                    latest_row = m_hist.iloc[-1]
+                    st.markdown("### 📋 操盤室核心籌碼純單機診斷報告：")
+                    
+                    # 防呆：確認欄位存在再輸出
+                    show_price = f"{latest_row['收盤價']:.1f} 元" if '收盤價' in latest_row and pd.notna(latest_row['收盤價']) else "暫無報價"
+                    st.write(f"本週大戶持股水位：**{latest_row['大戶%']:.2f} %** | 散戶持股水位：**{latest_row['散戶%']:.2f} %** | 當前對齊收盤價：**{show_price}**")
+                    
+                    if len(m_hist) >= 2:
+                        d_large = latest_row['大戶%'] - m_hist.iloc[-2]['大戶%']
+                        st.markdown("#### 🔍 操盤手實戰解讀結論：")
+                        if d_large > 0.5: st.error("🔥【主力強攻】大戶籌碼急劇鎖死！散戶大退場，多頭波段起漲前兆！")
+                        elif d_large < -0.5: st.warning("🚨【大戶棄船】主力正在趁亂出貨給市場散戶，建議避開！")
+                        else: st.info("💤【區間防守】大戶與散戶變動不大，股價震盪洗盤中。")
+                else:
+                    st.warning("⚠️ 數據合併後為空，請檢查本地數據庫日期是否正確。")
             else:
                 st.warning(f"❌ 查無股票代號 {input_stock} 的本地歷史籌碼紀錄。")
 
@@ -190,6 +210,7 @@ if db_master is not None:
         st.subheader("🔍 1秒全自動台股中文名稱交叉查閱")
         search_id = st.text_input("請輸入任何 4 碼台股代號進行中文名稱對照 (例如: 2330):", value="2330").strip()
         if search_id:
+            # 💡 此處已可安全共享最上層獲取的 names 字典
             if search_id in names:
                 st.success(f"🎯 股票代號 {search_id} 的官方真實名稱為： **【 {names[search_id]} 】**")
             else:
