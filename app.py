@@ -81,12 +81,12 @@ if db_master is not None:
     )
     
     # 3. 提取 10張以下散戶 (Level 1~5)
-    retail_levels = [1, 2, 3, 4, 5]  # 💡 已補齊：明確指定散戶級距
+    retail_levels = [1, 2, 3, 4, 5]
     retail_df = raw_data[raw_data['level'].isin(retail_levels)].groupby('stock_id')['percent'].sum().reset_index().rename(
         columns={'percent': '10張以下散戶持股%'}
     )
     
-    # 4. 安全計算總股東人數 (限定 level 1~15 避免重複加總全體總計欄位)
+    # 4. 安全計算總股東人數 (限定 level 1~15)
     total_holders = raw_data[raw_data['level'] <= 15].groupby('stock_id')['holders'].sum().reset_index().rename(
         columns={'holders': '總股東人數'}
     )
@@ -94,39 +94,35 @@ if db_master is not None:
     # 5. 合併三大籌碼指標
     merged = pd.merge(pd.merge(large_df, retail_df, on='stock_id'), total_holders, on='stock_id')
     
-    # 6. 只要是 4 碼純數字就留下來，完全不限制個股
+    # 6. 篩選 4 碼純數字普通股
     only_stocks = (merged['stock_id'].str.len() == 4) & (merged['stock_id'].str.isdigit())
     filtered = merged[only_stocks].copy()
     
-    # 7. 動態對照名稱與成交量
+    # 💡 完美對齊：利用 drop_duplicates 強力剔除資料庫中數值一模一樣的罐頭填充數據！
+    clean_pool = filtered.drop_duplicates(subset=['千張大戶持股%', '10張以下散戶持股%', '總股東人數'], keep=False).copy()
+    
+    # 7. 載入名稱與成交量對照
     names, volumes = load_stock_names_and_volumes()
     
-    # 💡 完美防呆：如果您的 CSV 裡有對照表以外的股票，會自動命名為「外圍個股」，不會被漏掉！
-    filtered['股票名稱'] = filtered['stock_id'].map(names).fillna("外圍個股")
+    clean_pool['股票名稱'] = clean_pool['stock_id'].map(names)
+    clean_pool['昨日成交量(張)'] = clean_pool['stock_id'].map(volumes)
     
-    # 💡 安全成交量機制：如果對照表沒寫這檔股票，預設給它 150 張，避免因為沒寫而被濾網卡死
-    filtered['昨日成交量(張)'] = filtered['stock_id'].map(volumes).fillna(150).astype(int)
+    # 💡 這裡用 dropna 確保只有我們名單中真正有量、有名字的核心追蹤股才能進入池子
+    final_pool = clean_pool.dropna(subset=['股票名稱', '昨日成交量(張)']).copy()
+    final_pool['昨日成交量(張)'] = final_pool['昨日成交量(張)'].astype(int)
     
-    filtered = filtered.rename(columns={'stock_id': '股票代號'})
-    filtered = filtered[['股票代號', '股票名稱', '千張大戶持股%', '千張大戶人數', '10張以下散戶持股%', '總股東人數', '昨日成交量(張)']]
+    final_pool = final_pool.rename(columns={'stock_id': '股票代號'})
+    final_pool = final_pool[['股票代號', '股票名稱', '千張大戶持股%', '千張大戶人數', '10張以下散戶持股%', '總股東人數', '昨日成交量(張)']]
     
-    # 8. 排除特定個股與金融股
-    filtered['股票代號數字'] = pd.to_numeric(filtered['股票代號'])
-    bad_codes = [2412, 2633, 3045, 4904]  # 💡 已補齊：排除特定中華電、高鐵等個股
-    
-    mask_normal = ~filtered['股票代號數字'].isin(bad_codes)
-    mask_no_finance = ~((filtered['股票代號數字'] >= 2800) & (filtered['股票代號數字'] <= 2897))
-    final_pool = filtered[mask_normal & mask_no_finance].drop(columns=['股票代號數字'])
-    
-    # 9. 執行多頭綜合濾網篩選
+    # 8. 執行綜合濾網篩選 (拉桿控制)
     result_df = final_pool[
         (final_pool['千張大戶持股%'] >= large_pct) & 
         (final_pool['10張以下散戶持股%'] <= retail_pct) & 
         (final_pool['總股東人數'] <= max_holders) &
         (final_pool['昨日成交量(張)'] >= min_vol_filter)
-    ].sort_values(by='總股東人數', ascending=True)
+    ].sort_values(by='昨日成交量(張)', ascending=False)  # ➔ 改為按真實成交量由大到小排序
 
-    # 10. 建立 Tabs
+    # 9. 建立 Tabs
     tab1, tab2, tab3 = st.tabs(["🔍 全市場中小型大戶鎖碼榜", "📊 個股籌碼全自動歷史深度健檢", "📋 全台股代號中文查閱中心"])
     
     with tab1:
