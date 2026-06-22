@@ -1,226 +1,111 @@
 ﻿import streamlit as st
 import pandas as pd
-import os
-import yfinance as yf
+import requests
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# 網頁專業寬螢幕配置 (必須在第一行)
-st.set_page_config(page_title="台股集保籌碼深度監控中心", layout="wide", page_icon="📈")
+# 網頁配置 (寬螢幕、高階黑化質感)
+st.set_page_config(page_title="台股3年官方集保籌碼監控中心", layout="wide", page_icon="📊")
 
-@st.cache_data(ttl=10)
-def load_pure_local_database(db_path):
-    if os.path.exists(db_path):
-        try:
-            df = pd.read_csv(db_path)
-            df['stock_id'] = df['stock_id'].astype(str).str.strip().str.zfill(4)
-            df['date'] = df['date'].astype(str).str.strip()
-            return df, "📦 歷史大數據庫 (chip_history_database.csv)"
-        except Exception as e:
-            return None, f"讀取異常: {str(e)}"
-    return None, "找不到檔案"
+@st.cache_data(ttl=28800)  # 快取8小時，避免頻繁重複呼叫 API 被阻擋
+def fetch_3year_chip_history(stock_id):
+    """聯網動態抓取過去 3 年的官方集保戶股權歷史資料"""
+    # 計算 3 年前的日期
+    start_date = (datetime.today() - timedelta(days=3*365)).strftime('%Y-%m-%d')
+    
+    # 呼叫 FinMind 官方開放資料集
+    url = f"https://finmindtrade.com{stock_id}&start_date={start_date}"
+    
+    try:
+        res = requests.get(url, timeout=15)
+        data = res.json()
+        if data['status'] == 200 and len(data['data']) > 0:
+            df = pd.DataFrame(data['data'])
+            # 確保型態與命名正確
+            df['HoldingSharesLevel'] = df['HoldingSharesLevel'].astype(int)
+            df['percent'] = df['percent'].astype(float)
+            df['people'] = df['people'].astype(int)
+            return df
+    except Exception as e:
+        st.error(f"❌ 數據庫聯線異常: {str(e)}")
+    return pd.DataFrame()
 
-@st.cache_data(ttl=14400)
-def load_stock_names_and_volumes():
-    # 這裡只留下您確定要手動對照的股票，其他不寫
-    # 如果您連這裡都不想預設，可以留空字典：name_dict = {}
-    name_dict = {
-        "2330": "台積電", "2408": "南亞科", "2317": "鴻海", "3105": "穩懋", 
-        "2356": "英業達", "6775": "達發", "3293": "鈊象", "3008": "大立光",
-        "2303": "聯電", "2454": "聯發科", "2382": "廣達", "2301": "光寶科",
-        "2603": "長榮", "2609": "陽明", "2615": "萬海", "2618": "長榮航"
-    }
-    volume_dict = {} # ➔ 這裡直接清空，不要預設成交量！
-    return name_dict, volume_dict
-
-@st.cache_data(ttl=3600)
-def get_yahoo_price_and_vol_history(stock_id):
-    formats = [f"{stock_id}.TW", f"{stock_id}.TWO"]
-    end_date = datetime.today().strftime('%Y-%m-%d')
-    start_date = (datetime.today() - timedelta(days=2*365)).strftime('%Y-%m-%d')
-    for symbol in formats:
-        try:
-            stock = yf.Ticker(symbol)
-            df = stock.history(start=start_date, end=end_date)
-            if not df.empty:
-                df = df.reset_index()
-                df['date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
-                df['真實成交量(張)'] = (df['Volume'] / 1000).astype(int)
-                return df[['date', 'Close', '真實成交量(張)']].rename(columns={'Close': '收盤價'})
-        except Exception: continue
-    return None
-
-st.title("📈 台股集保籌碼大數據監控中心 (終極自選股整合版)")
+# UI 介面設計
+st.title("📊 台灣官方集保戶股權分散表 — 3年深度歷史監控中心")
 st.markdown("---")
 
+# 側邊欄控制
 st.sidebar.header("🎯 核心控制面板")
-st.sidebar.info("💡 系統已全面升級為【純單機強固模式】：直接讀取您本機硬碟的私房歷史大數據庫檔案。")
+stock_input = st.sidebar.text_input("💡 請輸入欲健檢的台股代號 (4碼):", value="3293").strip()
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎛️ 飆股多頭濾網拉桿")
-large_pct = st.sidebar.slider("千張大戶持股比例下限 (%)", min_value=40.0, max_value=95.0, value=65.0, step=1.0)
-retail_pct = st.sidebar.slider("10張以下散戶持股上限 (%)", min_value=5.0, max_value=40.0, value=15.0, step=1.0)
-max_holders = st.sidebar.number_input("總股東人數上限 (鎖定高爆發中小型股)", min_value=1000, max_value=1000000, value=1000000, step=5000)
-min_vol_filter = st.sidebar.slider("前一日最低成交量 (張) ➔ 剔除流動性差個股", min_value=0, max_value=2000, value=100, step=50)
-
-DB_PATH = "chip_history_database.csv"
-
-db_master, source_status = load_pure_local_database(DB_PATH)
-
-if db_master is not None:
-    data_date = str(db_master['date'].max())
-    st.sidebar.success(f"📅 當前大數據庫最新日期: {data_date}")
+if stock_input:
+    # 開始動態撈取 3 年資料
+    st.info(f"🚀 正在即時抓取 {stock_input} 過去 3 年的每週五官方集保數據...")
+    raw_chip = fetch_3year_chip_history(stock_input)
     
-    # 1. 抓取最新一期的資料
-    raw_data = db_master[db_master['date'] == data_date].copy()
-    
-    # 2. 提取千張大戶 (Level 15)
-    large_df = raw_data[raw_data['level'] == 15][['stock_id', 'percent', 'holders']].rename(
-        columns={'percent': '千張大戶持股%', 'holders': '千張大戶人數'}
-    )
-    
-    # 3. 提取 10張以下散戶 (Level 1~5)
-    retail_levels = [1, 2, 3, 4, 5]
-    retail_df = raw_data[raw_data['level'].isin(retail_levels)].groupby('stock_id')['percent'].sum().reset_index().rename(
-        columns={'percent': '10張以下散戶持股%'}
-    )
-    
-    # 4. 安全計算總股東人數 (限定 level 1~15)
-    total_holders = raw_data[raw_data['level'] <= 15].groupby('stock_id')['holders'].sum().reset_index().rename(
-        columns={'holders': '總股東人數'}
-    )
-    
-    # 5. 合併三大籌碼指標
-    merged = pd.merge(pd.merge(large_df, retail_df, on='stock_id'), total_holders, on='stock_id')
-    
-    # 6. 篩選 4 碼純數字普通股
-    only_stocks = (merged['stock_id'].str.len() == 4) & (merged['stock_id'].str.isdigit())
-    filtered = merged[only_stocks].copy()
-    
-    # 💡 完美對齊：利用 drop_duplicates 強力剔除資料庫中數值一模一樣的罐頭填充數據！
-    clean_pool = filtered.drop_duplicates(subset=['千張大戶持股%', '10張以下散戶持股%', '總股東人數'], keep=False).copy()
-    
-    # 7. 載入名稱與成交量對照
-    names, volumes = load_stock_names_and_volumes()
-    
-    clean_pool['股票名稱'] = clean_pool['stock_id'].map(names)
-    clean_pool['昨日成交量(張)'] = clean_pool['stock_id'].map(volumes)
-    
-    # 💡 這裡用 dropna 確保只有我們名單中真正有量、有名字的核心追蹤股才能進入池子
-    final_pool = clean_pool.dropna(subset=['股票名稱', '昨日成交量(張)']).copy()
-    final_pool['昨日成交量(張)'] = final_pool['昨日成交量(張)'].astype(int)
-    
-    final_pool = final_pool.rename(columns={'stock_id': '股票代號'})
-    final_pool = final_pool[['股票代號', '股票名稱', '千張大戶持股%', '千張大戶人數', '10張以下散戶持股%', '總股東人數', '昨日成交量(張)']]
-    
-    # 8. 執行綜合濾網篩選 (拉桿控制)
-    result_df = final_pool[
-        (final_pool['千張大戶持股%'] >= large_pct) & 
-        (final_pool['10張以下散戶持股%'] <= retail_pct) & 
-        (final_pool['總股東人數'] <= max_holders) &
-        (final_pool['昨日成交量(張)'] >= min_vol_filter)
-    ].sort_values(by='昨日成交量(張)', ascending=False)  # ➔ 改為按真實成交量由大到小排序
-
-    # 9. 建立 Tabs
-    tab1, tab2, tab3 = st.tabs(["🔍 全市場中小型大戶鎖碼榜", "📊 個股籌碼全自動歷史深度健檢", "📋 全台股代號中文查閱中心"])
-    
-    with tab1:
-        st.subheader(f"🔥 當前符合條件且具備「流動量能」的黑馬個股 (計 {len(result_df)} 檔)")
-        if not result_df.empty:
-            st.dataframe(result_df.style.format({
-                '千張大戶持股%': '{:.2f}%', '10張以下散戶持股%': '{:.2f}%',
-                '千張大戶人數': '{:,} 人', '總股東人數': '{:,} 人', '昨日成交量(張)': '{:,} 張'
-            }), use_container_width=True, height=520)
-        else:
-            st.warning("💡 當前篩選條件太嚴格了，沒有股票符合，請調低大戶持股比例或放寬散戶持股上限！")
-
-    with tab2:
-        st.subheader("🕵️‍♂️ 指定個股【大戶籌碼線 ＋ 真實股價與成交量】專業交叉健檢")
-        user_picks = st.text_input("💡 操盤手自選歷史追蹤名單 (可用逗號隔開多檔):", value="3293, 3008, 2330, 2408, 2317, 3105, 2356, 6775")
-        tracked_stocks = [s.strip() for s in user_picks.split(',') if s.strip().isdigit()]
-        input_stock = st.selectbox("請選取一檔進行深度圖表診斷:", tracked_stocks if tracked_stocks else ["3105"])
+    if not raw_chip.empty:
+        # --- 數據清洗與統計 ---
+        # 1. 提取千張大戶 (Level 15)
+        large_chip = raw_chip[raw_chip['HoldingSharesLevel'] == 15][['date', 'percent', 'people']].rename(
+            columns={'percent': '千張大戶持股%', 'people': '千張大戶人數'}
+        )
         
-        if input_stock:
-            hist_stock = db_master[db_master['stock_id'] == input_stock.zfill(4)].copy()
-            if not hist_stock.empty:
-                hist_stock = hist_stock.drop_duplicates(subset=['date', 'level', 'percent'])
-                
-                # 標準化日期格式
-                hist_stock['date_str'] = pd.to_datetime(hist_stock['date'].astype(str), format='%Y%m%d', errors='coerce').dt.strftime('%Y-%m-%d')
-                if hist_stock['date_str'].isnull().all():
-                    hist_stock['date_str'] = pd.to_datetime(hist_stock['date'].astype(str), errors='coerce').dt.strftime('%Y-%m-%d')
-                
-                # 💡 修正 2：計算總人數時嚴格限制在 level <= 15，避免重複加總全體總計欄位
-                t_holders = hist_stock[hist_stock['level'] <= 15].groupby('date_str')['holders'].sum().reset_index().rename(columns={'holders': '總人數', 'date_str': 'date'})
-                l_df = hist_stock[hist_stock['level'] == 15][['date_str', 'percent']].rename(columns={'percent': '大戶%', 'date_str': 'date'})
-                
-                hist_r_string = "1,2,3,4,5"
-                hist_r_levels = [int(x) for x in hist_r_string.split(',')]
-                r_df = hist_stock[hist_stock['level'].isin(hist_r_levels)].groupby('date_str')['percent'].sum().reset_index().rename(columns={'percent': '散戶%', 'date_str': 'date'})
-                
-                m_hist = pd.merge(pd.merge(l_df, r_df, on='date'), t_holders, on='date').sort_values(by='date').reset_index(drop=True)
-                
-                # 接軌 Yahoo Finance 價格數據
-                price_df = get_yahoo_price_and_vol_history(input_stock)
-                if price_df is not None and not price_df.empty:
-                    m_hist = pd.merge(m_hist, price_df, on='date', how='left').sort_values(by='date')
-                    m_hist['收盤價'] = m_hist['收盤價'].ffill().bfill()
-                    m_hist['真實成交量(張)'] = m_hist['真實成交量(張)'].fillna(0).astype(int)
-                
-                # 雙層結構自適應配置
-                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                    vertical_spacing=0.12,
-                                    specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
-                                    row_heights=[0.7, 0.3])
-                
-                # 💡 優化 3：明確指定為 'date' 軸線类型，維持 Plotly 自適應的時間序列刻度
-                fig.add_trace(go.Scatter(x=m_hist['date'], y=m_hist['大戶%'], name='千張大戶持股 (%)', line=dict(color='#E41A1C', width=4)), row=1, col=1, secondary_y=False)
-                fig.add_trace(go.Scatter(x=m_hist['date'], y=m_hist['散戶%'], name='10張以下散戶 (%)', line=dict(color='#4DAF4A', width=2, dash='dash')), row=1, col=1, secondary_y=False)
-                
-                if '收盤價' in m_hist.columns and not m_hist['收盤價'].isna().all():
-                    fig.add_trace(go.Scatter(x=m_hist['date'], y=m_hist['收盤價'], name='真實收盤價 (元)', line=dict(color='#1F77B4', width=2.5)), row=1, col=1, secondary_y=True)
-                    fig.update_yaxes(title_text="<b>真實股價 (元)</b>", row=1, col=1, secondary_y=True)
-                
-                if '真實成交量(張)' in m_hist.columns:
-                    fig.add_trace(go.Bar(x=m_hist['date'], y=m_hist['真實成交量(張)'], name='當週成交量 (張)', marker_color='rgba(128,128,128,0.65)'), row=2, col=1)
-                    fig.update_yaxes(title_text="成交量 (張)", row=2, col=1)
-                
-                fig.update_layout(title=f"<b>股票代號 {input_stock} 【量價籌碼三位一體】深度监控交叉大圖</b>", template="plotly_white", hovermode="x unified", height=650)
-                fig.update_yaxes(title_text="持股比例 (%)", row=1, col=1, secondary_y=False)
-                
-                # 💡 修正 4：移除 type='category'，改為自動時間軸，避免合併不同頻率數據時發生圖表錯位斷線
-                fig.update_xaxes(title_text="資料日期 (每週五)", row=2, col=1)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # 報告解讀與安全性檢查
-                if not m_hist.empty:
-                    latest_row = m_hist.iloc[-1]
-                    st.markdown("### 📋 操盤室核心籌碼純單機診斷報告：")
-                    
-                    # 防呆：確認欄位存在再輸出
-                    show_price = f"{latest_row['收盤價']:.1f} 元" if '收盤價' in latest_row and pd.notna(latest_row['收盤價']) else "暫無報價"
-                    st.write(f"本週大戶持股水位：**{latest_row['大戶%']:.2f} %** | 散戶持股水位：**{latest_row['散戶%']:.2f} %** | 當前對齊收盤價：**{show_price}**")
-                    
-                    if len(m_hist) >= 2:
-                        d_large = latest_row['大戶%'] - m_hist.iloc[-2]['大戶%']
-                        st.markdown("#### 🔍 操盤手實戰解讀結論：")
-                        if d_large > 0.5: st.error("🔥【主力強攻】大戶籌碼急劇鎖死！散戶大退場，多頭波段起漲前兆！")
-                        elif d_large < -0.5: st.warning("🚨【大戶棄船】主力正在趁亂出貨給市場散戶，建議避開！")
-                        else: st.info("💤【區間防守】大戶與散戶變動不大，股價震盪洗盤中。")
-                else:
-                    st.warning("⚠️ 數據合併後為空，請檢查本地數據庫日期是否正確。")
-            else:
-                st.warning(f"❌ 查無股票代號 {input_stock} 的本地歷史籌碼紀錄。")
-
-    with tab3:
-        st.subheader("🔍 1秒全自動台股中文名稱交叉查閱")
-        search_id = st.text_input("請輸入任何 4 碼台股代號進行中文名稱對照 (例如: 2330):", value="2330").strip()
-        if search_id:
-            # 💡 此處已可安全共享最上層獲取的 names 字典
-            if search_id in names:
-                st.success(f"🎯 股票代號 {search_id} 的官方真實名稱為： **【 {names[search_id]} 】**")
-            else:
-                st.warning(f"ℹ️ 在官方普通股列表中找不到代號 {search_id}，請確認是否為台股自選核心4碼。")
-else:
-    st.error("❌ 嚴重錯誤：無法順利取得數據。")
+        # 2. 提取 10張以下散戶 (Level 1~5)
+        retail_chip = raw_chip[raw_chip['HoldingSharesLevel'].isin([1, 2, 3, 4, 5])].groupby('date')['percent'].sum().reset_index().rename(
+            columns={'percent': '10張以下散戶持股%'}
+        )
+        
+        # 3. 計算全體總股東人數 (Level 1~15)
+        total_holders = raw_chip[raw_chip['HoldingSharesLevel'] <= 15].groupby('date')['people'].sum().reset_index().rename(
+            columns={'people': '總股東人數'}
+        )
+        
+        # 合併所有籌碼軌跡
+        m_chip = pd.merge(pd.merge(large_chip, retail_chip, on='date'), total_holders, on='date').sort_values(by='date').reset_index(drop=True)
+        
+        # 顯示最新一週的官方表格快照 (Level 1-16)
+        latest_date = m_chip['date'].max()
+        st.success(f"📅 官方最新公告集保日期：{latest_date}")
+        
+        # 呈現最新一週完整的 1-15 級分散表
+        st.subheader(f"📋 {stock_input} 最新一週官方持股分級明細表 ({latest_date})")
+        snapshot_df = raw_chip[raw_chip['date'] == latest_date].sort_values(by='HoldingSharesLevel').reset_index(drop=True)
+        snapshot_df = snapshot_df.rename(columns={
+            'HoldingSharesLevel': '持股分級(Level)', 'people': '股東人數(人)', 'unit': '持股總股數(股)', 'percent': '持股比例(%)'
+        })[['持股分級(Level)', '股東人數(人)', '持股總股數(股)', '持股比例(%)']]
+        
+        st.dataframe(snapshot_df.style.format({
+            '股東人數(人)': '{:,}', '持股總股數(股)': '{:,}', '持股比例(%)': '{:.2f}%'
+        }), use_container_width=True, height=250)
+        
+        # --- 繪製 3 年大戶/散戶持股比例對照圖 ---
+        st.markdown("---")
+        st.subheader(f"📈 {stock_input} 過去 3 年【每週五大戶 vs 散戶】籌碼歷史趨勢大圖")
+        
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        # 紅線：大戶
+        fig.add_trace(go.Scatter(x=m_chip['date'], y=m_chip['千張大戶持股%'], name='千張大戶持股 (%)', line=dict(color='#E41A1C', width=3.5)), secondary_y=False)
+        # 綠虛線：散戶
+        fig.add_trace(go.Scatter(x=m_chip['date'], y=m_chip['10張以下散戶持股%'], name='10張以下散戶 (%)', line=dict(color='#4DAF4A', width=2, dash='dash')), secondary_y=False)
+        # 藍細線：總股東人數 (放右軸)
+        fig.add_trace(go.Scatter(x=m_chip['date'], y=m_chip['總股東人數'], name='總股東人數 (人)', line=dict(color='#984EA3', width=1.5)), secondary_y=True)
+        
+        fig.update_layout(template="plotly_white", hovermode="x unified", height=500, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        fig.update_yaxes(title_text="持股比例 (%)", secondary_y=False)
+        fig.update_yaxes(title_text="總股東人數 (人)", secondary_y=True)
+        fig.update_xaxes(title_text="每週五公告日期")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # --- 數據導出功能 (讓您可以下載這 3 年完整的累加乾淨數據) ---
+        st.markdown("---")
+        st.subheader("💾 籌碼歷史大數據導出")
+        csv_data = m_chip.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label=f"📥 下載 {stock_input} 過去3年每週五清洗後的籌碼大數據 CSV 檔案",
+            data=csv_data,
+            file_name=f"{stock_input}_3year_chip_history.csv",
+            mime="text/csv"
+        )
+    else:
+        st.warning("⚠️ 無法取得該股歷史集保數據，請確認該股票在 3 年內是否有上市櫃交易。")
