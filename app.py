@@ -132,7 +132,8 @@ with tab2:
             
             # 🎨 建立完美雙軸歷史大型 Plotly 圖表
             fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(go.Scatter(x=m_hist['date'], y=m_hist['大戶%'], name='千張大戶持股 (%)', line=dict(color='#E41A1C', width=4)), secondary_y=False)
+             # 綠虛線：散戶 (已修正海象運算子語法錯誤)
+            fig.add_trace(go.Scatter(x=m_hist['date'], y=m_hist['散戶%'], name='10張以下散戶 (%)', line=dict(color='#4DAF4A', width=2, dash='dash')), secondary_y=False)
             fig.add_trace(go.Scatter(x=m_hist['date'], y=m_chip:=m_hist['散戶%'], name='10張以下散戶 (%)', line=dict(color='#4DAF4A', width=2, dash='dash')), secondary_y=False)
             fig.add_trace(go.Scatter(x=m_hist['date'], y=m_hist['總人數'], name='總股東人數 (人)', line=dict(color='#1F77B4', width=1.5)), secondary_y=True)
             
